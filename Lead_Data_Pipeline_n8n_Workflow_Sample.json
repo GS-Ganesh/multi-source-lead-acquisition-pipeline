@@ -1,0 +1,175 @@
+{
+  "name": "Multi-Source Lead Acquisition Pipeline (Sample)",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Start Workflow",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [480, 112]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/linkedin-profile-search/runs?waitForFinish=300",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"currentJobTitles\": [\"Sales\",\"Marketing\",\"Account Executive\"], \"currentCompanies\": [\"target-company\"], \"profileScraperMode\": \"Short\", \"maxItems\": 30 }"
+      },
+      "name": "API Source 1 - Company Audience",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [704, 16],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "External API Credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.data.defaultDatasetId }}/items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "name": "Fetch Source 1 Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [928, 16],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "External API Credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Source 1 records\nconst items = $input.all();\nconst out = [];\nfor (const item of items) {\n  const records = Array.isArray(item.json) ? item.json : [item.json];\n  for (const r of records) {\n    if (!r.profileUrl && !r.linkedinUrl && !r.publicIdentifier) continue;\n    out.push({ json: {\n      fullName: r.fullName || `${r.firstName || ''} ${r.lastName || ''}`.trim(),\n      headline: r.headline || '',\n      linkedinUrl: r.profileUrl || r.linkedinUrl || `https://www.linkedin.com/in/${r.publicIdentifier}`,\n      company: r.company || '',\n      location: r.location || '',\n      source: 'Company Audience',\n      scrapedAt: new Date().toISOString()\n    }});\n  }\n}\nreturn out;"
+      },
+      "name": "Normalize Source 1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1152, 16]
+    },
+    {
+      "parameters": { "maxItems": 25 },
+      "name": "Limit Source 1",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [1376, 16]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/linkedin-profile-search/runs?waitForFinish=300",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"searchQuery\": \"SDR outbound sales\", \"currentJobTitles\": [\"SDR\",\"BDR\"], \"takePages\": 2 }"
+      },
+      "name": "API Source 2 - Engagement Audience",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [704, 208]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.data.defaultDatasetId }}/items"
+      },
+      "name": "Fetch Source 2 Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [928, 208]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Source 2 records\nconst items = $input.all();\nconst out = [];\nfor (const item of items) {\n  const records = Array.isArray(item.json) ? item.json : [item.json];\n  for (const r of records) {\n    if (!r.linkedinUrl && !r.publicIdentifier) continue;\n    out.push({ json: {\n      fullName: r.name || '',\n      headline: r.headline || '',\n      linkedinUrl: r.linkedinUrl || `https://www.linkedin.com/in/${r.publicIdentifier}`,\n      company: r.companyName || '',\n      location: r.location || '',\n      source: 'Engagement Audience',\n      scrapedAt: new Date().toISOString()\n    }});\n  }\n}\nreturn out;"
+      },
+      "name": "Normalize Source 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1152, 208]
+    },
+    {
+      "parameters": { "maxItems": 25 },
+      "name": "Limit Source 2",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [1376, 208]
+    },
+    {
+      "parameters": {},
+      "name": "Merge Leads",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1600, 112]
+    },
+    {
+      "parameters": {
+        "compare": "selectedFields",
+        "fieldsToCompare": "linkedinUrl"
+      },
+      "name": "Remove Duplicates",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 1,
+      "position": [1824, 112]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.linkedinUrl }}",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ]
+        }
+      },
+      "name": "Filter Valid Leads",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [2048, 112]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lead scoring + formatting\nconst items = $input.all();\nfor (const item of items) {\n  const l = item.json;\n  let score = 0;\n  if (l.headline) score += 25;\n  if (l.company) score += 20;\n  if (l.location) score += 15;\n  if (l.linkedinUrl) score += 20;\n  if (l.fullName) score += 10;\n  item.json.leadScore = score;\n}\nitems.sort((a,b)=>b.json.leadScore-a.json.leadScore);\nreturn items;"
+      },
+      "name": "Score & Format Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2272, 112]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "sample-spreadsheet-id",
+        "sheetName": "Sheet1"
+      },
+      "name": "Export to Sheet (Sample)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2496, 112],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets Credential"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Start Workflow": { "main": [[{ "node": "API Source 1 - Company Audience" }, { "node": "API Source 2 - Engagement Audience" }]] },
+    "API Source 1 - Company Audience": { "main": [[{ "node": "Fetch Source 1 Results" }]] },
+    "Fetch Source 1 Results": { "main": [[{ "node": "Normalize Source 1" }]] },
+    "Normalize Source 1": { "main": [[{ "node": "Limit Source 1" }]] },
+    "Limit Source 1": { "main": [[{ "node": "Merge Leads", "index": 0 }]] },
+    "API Source 2 - Engagement Audience": { "main": [[{ "node": "Fetch Source 2 Results" }]] },
+    "Fetch Source 2 Results": { "main": [[{ "node": "Normalize Source 2" }]] },
+    "Normalize Source 2": { "main": [[{ "node": "Limit Source 2" }]] },
+    "Limit Source 2": { "main": [[{ "node": "Merge Leads", "index": 1 }]] },
+    "Merge Leads": { "main": [[{ "node": "Remove Duplicates" }]] },
+    "Remove Duplicates": { "main": [[{ "node": "Filter Valid Leads" }]] },
+    "Filter Valid Leads": { "main": [[{ "node": "Score & Format Leads" }]] },
+    "Score & Format Leads": { "main": [[{ "node": "Export to Sheet (Sample)" }]] }
+  }
+}
